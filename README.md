@@ -9,7 +9,7 @@ Official Pytorch implementation of [EMCAD: Efficient Multi-scale Convolutional A
 ## Architecture
 
 <p align="center">
-<img src="EMCAD_architecture.png" width=100% height=40% 
+<img src="EMCAD_architecture.jpg" width=100% height=40% 
 class="center">
 </p>
 
