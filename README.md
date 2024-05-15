@@ -1,7 +1,6 @@
 # EMCAD
-# CVPR 2024
 
-Official Pytorch implementation of [EMCAD: Efficient Multi-scale Convolutional Attention Decoding for Medical Image Segmentation, CVPR 2024](https://arxiv.org/abs/2405.06880).  
+Official Pytorch implementation of [EMCAD: Efficient Multi-scale Convolutional Attention Decoding for Medical Image Segmentation](https://arxiv.org/abs/2405.06880) published in CVPR 2024.  
 <br>
 [Md Mostafijur Rahman](https://github.com/mostafij-rahman), [Mustafa Munir](https://github.com/mmunir127), [Radu Marculescu](https://radum.ece.utexas.edu/)
 <p>The University of Texas at Austin</p>
