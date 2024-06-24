@@ -80,10 +80,10 @@ class EMCADNet(nn.Module):
         print('Model %s created, param count: %d' %
                      ('EMCAD decoder: ', sum([m.numel() for m in self.decoder.parameters()])))
              
-        self.out_head1 = nn.Conv2d(channels[0], num_classes, 1)
-        self.out_head2 = nn.Conv2d(channels[1], num_classes, 1)
-        self.out_head3 = nn.Conv2d(channels[2], num_classes, 1)
-        self.out_head4 = nn.Conv2d(channels[3], num_classes, 1)
+        self.out_head4 = nn.Conv2d(channels[0], num_classes, 1)
+        self.out_head3 = nn.Conv2d(channels[1], num_classes, 1)
+        self.out_head2 = nn.Conv2d(channels[2], num_classes, 1)
+        self.out_head1 = nn.Conv2d(channels[3], num_classes, 1)
         
     def forward(self, x, mode='test'):
         
@@ -99,20 +99,20 @@ class EMCADNet(nn.Module):
         dec_outs = self.decoder(x4, [x3, x2, x1])
         
         # prediction heads  
-        p1 = self.out_head1(dec_outs[0])
-        p2 = self.out_head2(dec_outs[1])
-        p3 = self.out_head3(dec_outs[2])
-        p4 = self.out_head4(dec_outs[3])
+        p4 = self.out_head4(dec_outs[0])
+        p3 = self.out_head3(dec_outs[1])
+        p2 = self.out_head2(dec_outs[2])
+        p1 = self.out_head1(dec_outs[3])
 
-        p1 = F.interpolate(p1, scale_factor=32, mode='bilinear')
-        p2 = F.interpolate(p2, scale_factor=16, mode='bilinear')
-        p3 = F.interpolate(p3, scale_factor=8, mode='bilinear')
-        p4 = F.interpolate(p4, scale_factor=4, mode='bilinear')
+        p4 = F.interpolate(p4, scale_factor=32, mode='bilinear')
+        p3 = F.interpolate(p3, scale_factor=16, mode='bilinear')
+        p2 = F.interpolate(p2, scale_factor=8, mode='bilinear')
+        p1 = F.interpolate(p1, scale_factor=4, mode='bilinear')
 
         if mode == 'test':
-            return [p1, p2, p3, p4]
+            return [p4, p3, p2, p1]
         
-        return [p1, p2, p3, p4]
+        return [p4, p3, p2, p1]
                
 
         
