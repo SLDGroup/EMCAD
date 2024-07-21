@@ -20,7 +20,7 @@ class="center">
 </p>
 
 <p align="center">
-<img src="qualitative_results_binary.png" width=100% height=40% 
+<img src="qualitative_results_clinicdb.png" width=100% height=40% 
 class="center">
 </p>
 
