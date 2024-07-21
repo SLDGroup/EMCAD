@@ -15,7 +15,7 @@ class="center">
 ## Quantitative Results
 
 <p align="center">
-<img src="avg_dice_flops.png" width=45% height=42% 
+<img src="avg_dice_flops.png" width=45% height=45% 
 class="center">
 <img src="avg_dice_params.png" width=45% height=40% 
 class="center">
@@ -29,7 +29,7 @@ class="center">
 </p>
 
 <p align="center">
-<img src="qualitative_results_clinicdb.png" width=100% height=40% 
+<img src="qualitative_results_clinicdb.png" width=75% height=40% 
 class="center">
 </p>
 
