@@ -12,6 +12,15 @@ Official Pytorch implementation of the paper [EMCAD: Efficient Multi-scale Convo
 class="center">
 </p>
 
+## Quantitative Results
+
+<p align="center">
+<img src="avg_dice_flops.png" width=50% height=40% 
+class="center">
+<img src="avg_dice_params.png" width=50% height=40% 
+class="center">
+</p>
+
 ## Qualitative Results
 
 <p align="center">
