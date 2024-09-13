@@ -5,7 +5,7 @@ Official Pytorch implementation of the paper [EMCAD: Efficient Multi-scale Convo
 [Md Mostafijur Rahman](https://github.com/mostafij-rahman), [Mustafa Munir](https://github.com/mmunir127), [Radu Marculescu](https://radum.ece.utexas.edu/)
 <p>The University of Texas at Austin</p>
 
-## News
+## Update
 **Synapse training code released!!!**
 
 ## Architecture
