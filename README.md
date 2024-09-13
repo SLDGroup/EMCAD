@@ -79,6 +79,3 @@ We are very grateful for these excellent works [timm](https://github.com/hugging
   year={2024}
 }
 ```
-
-
-## Full training and evaluation code coming soon ...
