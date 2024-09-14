@@ -61,6 +61,8 @@ You should download the pretrained PVTv2 model from [Google Drive](https://drive
 ### Training:
 ```
 cd into EMCAD
+python -W ignore train_synapse.py --root_path /path/to/train/data --volume_path path/to/test/data --encoder pvt_v2_b2         # replace --root_path and --volume_path with your actual path to data.
+
 ```
 
 ### Testing:
