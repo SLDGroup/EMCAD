@@ -90,10 +90,11 @@ def trainer_synapse(args, model, snapshot_path):
                 P = [P]
             if epoch_num == 0 and i_batch == 0:
                 n_outs = len(P)
+                out_idxs = list(np.arange(n_outs)) #[0, 1, 2, 3]#, 4, 5, 6, 7]
                 if args.supervision == 'mutation':
-                    ss = [x for x in powerset(l)]
+                    ss = [x for x in powerset(out_idxs)]
                 elif args.supervision == 'deep_supervision':
-                    ss = [[x] for x in l]
+                    ss = [[x] for x in out_idxs]
                 else:
                     ss = [[-1]]
                 print(ss)
