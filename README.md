@@ -40,6 +40,7 @@ class="center">
 ### Recommended environment:
 ```
 conda create -n emcadenv python=3.8
+conda activate emcadenv
 
 Python 3.8
 Pytorch 1.11.0
