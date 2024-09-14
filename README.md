@@ -39,6 +39,8 @@ class="center">
 ## Usage:
 ### Recommended environment:
 ```
+conda create -n emcadenv python=3.8
+
 Python 3.8
 Pytorch 1.11.0
 torchvision 0.12.0
