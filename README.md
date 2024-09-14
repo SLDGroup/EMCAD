@@ -42,8 +42,8 @@ class="center">
 conda create -n emcadenv python=3.8
 conda activate emcadenv
 
-Python 3.8
-Pytorch 1.11.0
+python 3.8
+torch 1.11.0
 torchvision 0.12.0
 timm 0.6.12
 segmentation-mask-overlay 0.3.4
