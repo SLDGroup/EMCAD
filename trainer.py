@@ -94,7 +94,7 @@ def trainer_synapse(args, model, snapshot_path):
                     ss = [x for x in powerset(l)]
                 elif args.supervision == 'deep_supervision':
                     ss = [[x] for x in l]
-                else
+                else:
                     ss = [[-1]]
                 print(ss)
             
