@@ -39,6 +39,8 @@ parser.add_argument('--concatenation', action='store_true',
                     default=False, help='use this flag to concatenate feature maps in MSDC block')
 parser.add_argument('--no_pretrain', action='store_true', 
                     default=False, help='use this flag to turn off loading pretrained enocder weights')
+parser.add_argument('--pretrained_path', type=str,
+                    default='./pretrained_pth/pvt/pvt_v2_b2.pth', help='path to pretrained encoder')
 parser.add_argument('--supervision', type=str,
                     default='mutation', help='loss supervision: mutation, deep_supervision or last_layer')
 
@@ -115,7 +117,7 @@ if __name__ == "__main__":
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
     
-    model = EMCADNet(num_classes=args.num_classes, kernel_sizes=args.kernel_sizes, expansion_factor=args.expansion_factor, dw_parallel=not args.no_dw_parallel, add=not args.concatenation, lgag_ks=args.lgag_ks, activation=args.activation_mscb, encoder=args.encoder, pretrain= not args.no_pretrain)
+    model = EMCADNet(num_classes=args.num_classes, kernel_sizes=args.kernel_sizes, expansion_factor=args.expansion_factor, dw_parallel=not args.no_dw_parallel, add=not args.concatenation, lgag_ks=args.lgag_ks, activation=args.activation_mscb, encoder=args.encoder, pretrain= not args.no_pretrain, pretrained_path=args.pretrained_path)
 
     model.cuda()
 
