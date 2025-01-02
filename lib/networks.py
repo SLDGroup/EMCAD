@@ -8,7 +8,7 @@ from lib.decoders import EMCAD
 
 
 class EMCADNet(nn.Module):
-    def __init__(self, num_classes=1, kernel_sizes=[1,3,5], expansion_factor=2, dw_parallel=True, add=True, lgag_ks=3, activation='relu', encoder='pvt_v2_b2', pretrain=True):
+    def __init__(self, num_classes=1, kernel_sizes=[1,3,5], expansion_factor=2, dw_parallel=True, add=True, lgag_ks=3, activation='relu', encoder='pvt_v2_b2', pretrain=True, pretrained_dir='./pretrained_pth/pvt/'):
         super(EMCADNet, self).__init__()
 
         # conv block to convert single channel to 3 channels
@@ -21,27 +21,27 @@ class EMCADNet(nn.Module):
         # backbone network initialization with pretrained weight
         if encoder == 'pvt_v2_b0':
             self.backbone = pvt_v2_b0()
-            path = './pretrained_pth/pvt/pvt_v2_b0.pth'
+            path = pretrained_dir + '/pvt_v2_b0.pth'
             channels=[256, 160, 64, 32]
         elif encoder == 'pvt_v2_b1':
             self.backbone = pvt_v2_b1()
-            path = './pretrained_pth/pvt/pvt_v2_b1.pth'
+            path = pretrained_dir + '/pvt_v2_b1.pth'
             channels=[512, 320, 128, 64]
         elif encoder == 'pvt_v2_b2':
             self.backbone = pvt_v2_b2()
-            path = './pretrained_pth/pvt/pvt_v2_b2.pth'
+            path = pretrained_dir + '/pvt_v2_b2.pth'
             channels=[512, 320, 128, 64]
         elif encoder == 'pvt_v2_b3':
             self.backbone = pvt_v2_b3()
-            path = './pretrained_pth/pvt/pvt_v2_b3.pth'
+            path = pretrained_dir + '/pvt_v2_b3.pth'
             channels=[512, 320, 128, 64]
         elif encoder == 'pvt_v2_b4':
             self.backbone = pvt_v2_b4()
-            path = './pretrained_pth/pvt/pvt_v2_b4.pth'
+            path = pretrained_dir + '/pvt_v2_b4.pth'
             channels=[512, 320, 128, 64]
         elif encoder == 'pvt_v2_b5':
             self.backbone = pvt_v2_b5() 
-            path = './pretrained_pth/pvt/pvt_v2_b5.pth'
+            path = pretrained_dir + '/pvt_v2_b5.pth'
             channels=[512, 320, 128, 64]
         elif encoder == 'resnet18':
             self.backbone = resnet18(pretrained=pretrain)
@@ -61,7 +61,7 @@ class EMCADNet(nn.Module):
         else:
             print('Encoder not implemented! Continuing with default encoder pvt_v2_b2.')
             self.backbone = pvt_v2_b2()  
-            path = './pretrained_pth/pvt/pvt_v2_b2.pth'
+            path = pretrained_dir + '/pvt_v2_b2.pth'
             channels=[512, 320, 128, 64]
             
         if pretrain==True and 'pvt_v2' in encoder:
