@@ -5,6 +5,12 @@ Official Pytorch implementation of the paper [EMCAD: Efficient Multi-scale Convo
 [Md Mostafijur Rahman](https://github.com/mostafij-rahman), [Mustafa Munir](https://github.com/mmunir127), [Radu Marculescu](https://radum.ece.utexas.edu/)
 <p>The University of Texas at Austin</p>
 
+#### 🔍 **Check out our CVPRW 2024 paper! [PP-SAM](https://github.com/SLDGroup/PP-SAM)** 
+#### 🔍 **Check out our WACV 2024 paper! [G-CASCADE](https://github.com/SLDGroup/G-CASCADE)**
+#### 🔍 **Check out our MIDL 2023 paper! [MERIT](https://github.com/SLDGroup/MERIT)**
+#### 🔍 **Check out our WACV 2024 paper! [CASCADE](https://github.com/SLDGroup/CASCADE)**
+
+
 ## Update
 
 ### **➡️ Please follow our [CASCADE](https://github.com/SLDGroup/CASCADE) training and inference code for ACDC dataset!!!**
