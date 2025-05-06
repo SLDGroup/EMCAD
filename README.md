@@ -14,8 +14,8 @@ Official Pytorch implementation of the paper [EMCAD: Efficient Multi-scale Convo
 ## Update
 
 ### **➡️ Please follow our [CASCADE](https://github.com/SLDGroup/CASCADE) training and inference code for ACDC dataset!!!**
-### **🚀 May 6, 2025: Synapse training code released!!!**
-### **🚀 Synapse training code released!!!**
+### **🚀 May 6, 2025: Synapse inference code released!!!**
+### **🚀 September 12, 2024: Synapse training code released!!!**
 
 ## Architecture
 
