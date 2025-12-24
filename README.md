@@ -69,6 +69,9 @@ Note: If you use the preprocessed data from [TransUNet](https://drive.google.com
 - **ACDC dataset:**
 Download the preprocessed ACDC dataset from [Google Drive](https://drive.google.com/file/d/1CruCQ-jjvA97BX-LIYwXaRMLmp3DN9zc/view) and move into './data/ACDC/' folder.
 
+- **Polyp datasets:**
+Download the splited polyp datasets from [Google Drive](https://drive.google.com/drive/folders/1XyjNgmPqikGxCaOdP0i6Xzf3deDIpbCV?usp=share_link) and move into './data/polyp/' folder.
+
 ### Pretrained model:
 You should download the pretrained PVTv2 model from [Google Drive](https://drive.google.com/drive/folders/1d5F1VjEF1AtTkNO93JwVBBSivE8zImiF?usp=share) or [PVT GitHub](https://github.com/whai362/PVT/releases/tag/v2), and then put it in the './pretrained_pth/pvt/' folder for initialization.
 
