@@ -43,8 +43,7 @@ parser.add_argument('--concatenation', action='store_true',
                     default=False, help='use this flag to concatenate feature maps in MSDC block')
 parser.add_argument('--no_pretrain', action='store_true', 
                     default=False, help='use this flag to turn off loading pretrained enocder weights')
-parser.add_argument('--pretrained_dir', type=str,
-                    default='./pretrained_pth/pvt/', help='path to pretrained encoder dir')
+parser.add_argument('--pretrained_dir', type=str,   default='./pretrained_pth/pvt/', help='path to pretrained encoder dir')
 parser.add_argument('--supervision', type=str,
                     default='mutation', help='loss supervision: mutation, deep_supervision or last_layer')
 
@@ -148,6 +147,7 @@ if __name__ == "__main__":
 
     #snapshot_path = 'model_pth/'+args.encoder+'_EMCAD_wi_normal_dw_parallel_add_Conv2D_cec_cdc1x1_dwc_cs_ef2_k_sizes_1_3_5_ag3g_relu6_up3_relu_to1_3ch_relu_loss2p4_w1_out1_nlrd_mutation_True_cds_False_cds_decoder_FalseRun'+str(run)+'_Synapse224/'+args.encoder+'_EMCAD_wi_normal_dw_parallel_add_Conv2D_cec_cdc1x1_dwc_cs_ef2_k_sizes_1_3_5_ag3g_relu6_up3_relu_to1_3ch_relu_loss2p4_w1_out1_nlrd_mutation_True_cds_False_cds_decoder_FalseRun'+str(run)+'_50k_epo300_bs6_lr0.0001_224_s2222'
     snapshot = os.path.join(snapshot_path, 'best.pth')
+    print(">>>>>>snapshot值(也是best.pth要放的位置)：", snapshot)
     if not os.path.exists(snapshot): snapshot = snapshot.replace('best', 'epoch_'+str(args.max_epochs-1))
     model.load_state_dict(torch.load(snapshot))
     snapshot_name = snapshot_path.split('/')[-1]

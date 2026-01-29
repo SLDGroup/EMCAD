@@ -85,13 +85,13 @@ class Synapse_dataset(Dataset):
             #label[label==13]= 0
             #label[label==11]= 5
 
-        if self.nclass == 9:
-            label[label==5]= 0
-            label[label==9]= 0
-            label[label==10]= 0
-            label[label==12]= 0
-            label[label==13]= 0
-            label[label==11]= 5
+        # if self.nclass == 9:
+        #     label[label==5]= 0
+        #     label[label==9]= 0
+        #     label[label==10]= 0
+        #     label[label==12]= 0
+        #     label[label==13]= 0
+        #     label[label==11]= 5
             
         sample = {'image': image, 'label': label}
         if self.transform:
