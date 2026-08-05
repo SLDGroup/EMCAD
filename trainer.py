@@ -18,7 +18,7 @@ from torch.cuda.amp import GradScaler, autocast
 
 from utils.dataset_synapse import Synapse_dataset, RandomGenerator
 from utils.utils import powerset, one_hot_encoder, DiceLoss, val_single_volume
-            
+        
 def inference(args, model, best_performance):
     db_test = Synapse_dataset(base_dir=args.volume_path, split="test_vol", list_dir=args.list_dir, nclass=args.num_classes)
     

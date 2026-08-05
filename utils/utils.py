@@ -20,6 +20,9 @@ from ptflops import get_model_complexity_info
 
 import matplotlib.pyplot as plt #add by lzq
 
+"""
+生成所有子集组合，是 Mutation Supervision 的关键
+"""
 def powerset(seq):
     """
     Returns all the subsets of this set. This is a generator.
