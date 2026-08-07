@@ -13,13 +13,13 @@ splits = ['train', 'test']
 
 for split in splits:
     if(split == 'train'):
-        ct_path = './data/synapse/Abdomen/RawData/TrainSet/img' # set your path to your trainset directory
-        seg_path = './data/synapse/Abdomen/RawData/TrainSet/label' 
-        save_path = './data/synapse/train_npz_mframes/'
+        ct_path = '../data/synapse/Abdomen/RawData/TrainSet/img' # set your path to your trainset directory
+        seg_path = '../data/synapse/Abdomen/RawData/TrainSet/label' 
+        save_path = '../data/synapse/train_npz_mframes/'
     else:
-        ct_path = './data/synapse/Abdomen/RawData/TestSet/img' # set your path to your testset directory
-        seg_path = './data/synapse/Abdomen/RawData/TestSet/label'
-        save_path = './data/synapse/test_vol_h5_mframes/'
+        ct_path = '../data/synapse/Abdomen/RawData/TestSet/img' # set your path to your testset directory
+        seg_path = '../data/synapse/Abdomen/RawData/TestSet/label'
+        save_path = '../data/synapse/test_vol_h5_mframes/'
     
     if os.path.exists(save_path) is False:
         os.mkdir(save_path)

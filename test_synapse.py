@@ -18,7 +18,7 @@ from lib.networks import EMCADNet
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--volume_path', type=str,
-                    default='./data/synapse/test_vol_h5_new', help='root dir for validation volume data')
+                    default='../data/synapse/test_vol_h5_new', help='root dir for validation volume data')
 parser.add_argument('--dataset', type=str,
                     default='Synapse', help='experiment_name')
 parser.add_argument('--num_classes', type=int,

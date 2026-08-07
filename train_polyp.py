@@ -206,8 +206,8 @@ if __name__ == '__main__':
     parser.add_argument('--decay_epoch', type=int, default=300)
     parser.add_argument('--color_image', default=True)
     parser.add_argument('--augmentation', default=True)
-    parser.add_argument('--train_path', type=str, default=f'./data/polyp/target/{dataset_name}/train/')
-    parser.add_argument('--test_path', type=str, default=f'./data/polyp/target/{dataset_name}/')
+    parser.add_argument('--train_path', type=str, default=f'../data/polyp/target/{dataset_name}/train/')
+    parser.add_argument('--test_path', type=str, default=f'../data/polyp/target/{dataset_name}/')
     parser.add_argument('--train_save', type=str, default='') 
     opt = parser.parse_args()
 

@@ -23,4 +23,14 @@ Thumbs.db
 
 # Python
 __pycache__/
+
+lib/__pycache__
+
 *.pyc
+
+
+.vscode
+.tmp_pypdf
+.tmp
+.agents
+

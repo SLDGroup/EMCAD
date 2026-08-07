@@ -129,7 +129,7 @@ if __name__ == '__main__':
     parser.add_argument('--img_size', type=int, default=352)
     parser.add_argument('--test_batchsize', type=int, default=1)
     parser.add_argument('--color_image', default=True)
-    parser.add_argument('--test_path', type=str, default='./data/polyp/target/')
+    parser.add_argument('--test_path', type=str, default='../data/polyp/target/')
     opt = parser.parse_args()
 
     # --- Paths ---
