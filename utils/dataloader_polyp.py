@@ -1,100 +1,250 @@
-import os
+import hashlib
+import random
+from pathlib import Path
+
+import albumentations as A
 import cv2
 import numpy as np
 import torch
 import torch.utils.data as data
-from PIL import Image
-import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+
+SUPPORTED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".bmp",
+}
+
+
+def _index_by_stem(root):
+    root = Path(root)
+    if not root.is_dir():
+        raise FileNotFoundError("Directory not found: {}".format(root))
+
+    indexed = {}
+    for path in sorted(root.iterdir()):
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            key = path.stem.casefold()
+            if key in indexed:
+                raise RuntimeError(
+                    "Duplicate file stem in {}: {} and {}".format(
+                        root, indexed[key].name, path.name
+                    )
+                )
+            indexed[key] = path
+
+    if not indexed:
+        raise RuntimeError("No supported image files found in: {}".format(root))
+
+    return indexed
+
+
+def _seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+
+
+def polyp_eval_collate(batch):
+    images = torch.stack([item[0] for item in batch], dim=0)
+    masks = [item[1] for item in batch]
+    original_sizes = torch.stack([item[2] for item in batch], dim=0)
+    names = [item[3] for item in batch]
+    return images, masks, original_sizes, names
+
+
 class PolypDataset(data.Dataset):
-    """
-    Unified adaptive dataloader for polyp segmentation.
-    Uses Albumentations and strictly handles binary mask conversion.
-    """
-    def __init__(self, image_root, gt_root, trainsize, augmentation, split='train', color_image=True):
-        self.trainsize = trainsize
-        self.color_image = color_image
-        self.augmentation = augmentation
+    def __init__(
+        self,
+        image_root,
+        gt_root,
+        trainsize,
+        augmentation=False,
+        split="train",
+        color_image=True,
+    ):
+        if split not in {"train", "val", "test"}:
+            raise ValueError("split must be train, val, or test")
+
+        self.trainsize = int(trainsize)
+        self.augmentation = bool(augmentation)
         self.split = split
-        
-        # Load and sort file paths
-        exts = ('.jpg', '.png', '.jpeg', '.tif')
-        self.images = sorted([os.path.join(image_root, f) for f in os.listdir(image_root) if f.lower().endswith(exts)])
-        self.gts = sorted([os.path.join(gt_root, f) for f in os.listdir(gt_root) if f.lower().endswith(exts)])
-        
-        self.filter_files()
-        self.size = len(self.images)
+        self.color_image = bool(color_image)
 
-        # Transformation Setup
-        mean = [0.485, 0.456, 0.406] if color_image else [0.5]
-        std = [0.229, 0.224, 0.225] if color_image else [0.229]
+        images = _index_by_stem(image_root)
+        masks = _index_by_stem(gt_root)
 
-        if self.split == 'train' and self.augmentation:
-            self.transform = A.Compose([
-                A.Rotate(limit=90, p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.HorizontalFlip(p=0.5),
-                A.Resize(height=self.trainsize, width=self.trainsize),
+        image_keys = set(images)
+        mask_keys = set(masks)
+
+        if image_keys != mask_keys:
+            missing_masks = sorted(image_keys - mask_keys)[:10]
+            missing_images = sorted(mask_keys - image_keys)[:10]
+            raise RuntimeError(
+                "Image/mask stems do not match. "
+                "missing_masks={} missing_images={}".format(
+                    missing_masks, missing_images
+                )
+            )
+
+        self.samples = [
+            (key, images[key], masks[key])
+            for key in sorted(image_keys)
+        ]
+        self.stems = tuple(key for key, _, _ in self.samples)
+
+        digest = hashlib.sha256()
+        for key, image_path, mask_path in self.samples:
+            digest.update(
+                "{}\t{}\t{}\n".format(
+                    key, image_path.name, mask_path.name
+                ).encode("utf-8")
+            )
+        self.manifest_sha256 = digest.hexdigest()
+
+        mean = (
+            (0.485, 0.456, 0.406)
+            if self.color_image
+            else (0.5,)
+        )
+        std = (
+            (0.229, 0.224, 0.225)
+            if self.color_image
+            else (0.229,)
+        )
+
+        transforms = []
+
+        if self.split == "train" and self.augmentation:
+            transforms.extend(
+                [
+                    A.Rotate(limit=90, p=0.5),
+                    A.VerticalFlip(p=0.5),
+                    A.HorizontalFlip(p=0.5),
+                ]
+            )
+
+        transforms.extend(
+            [
+                A.Resize(
+                    height=self.trainsize,
+                    width=self.trainsize,
+                ),
                 A.Normalize(mean=mean, std=std),
-                ToTensorV2()
-            ])
-        else:
-            self.transform = A.Compose([
-                A.Resize(height=self.trainsize, width=self.trainsize),
-                A.Normalize(mean=mean, std=std),
-                ToTensorV2()
-            ])
+                ToTensorV2(),
+            ]
+        )
 
-    def filter_files(self):
-        valid_images, valid_gts = [], []
-        for img_p, gt_p in zip(self.images, self.gts):
-            if os.path.exists(img_p) and os.path.exists(gt_p):
-                valid_images.append(img_p)
-                valid_gts.append(gt_p)
-        self.images, self.gts = valid_images, valid_gts
-
-    def __getitem__(self, index):
-        # 1. Load Image
-        image = cv2.imread(self.images[index])
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB if self.color_image else cv2.COLOR_BGR2GRAY)
-        
-        # 2. Load Mask
-        mask_np = cv2.imread(self.gts[index], cv2.IMREAD_GRAYSCALE)
-
-        # 3. Apply Transformations
-        augmented = self.transform(image=image, mask=mask_np)
-        image = augmented['image']
-        mask = augmented['mask']
-
-        # 4. Adaptive Binary Mask Logic
-        # Thinking carefully: This handles 0/255 with noise and 0/1/2/3 labels.
-        max_val = mask.max()
-        if max_val > 127.0:
-            # Treats everything above 20 as foreground to catch 255 but ignore noise
-            mask = (mask > 20).long()
-        else:
-            # Treats all integer labels (1, 2, 3...) as foreground
-            mask = (mask >= 1).long()
-
-        if len(mask.shape) == 2:
-            mask = mask.unsqueeze(0)
-
-        # 5. Return Logic
-        if self.split == 'train':
-            return image, mask
-        else:
-            with Image.open(self.gts[index]) as img:
-                original_shape = img.size
-            name = os.path.basename(self.images[index])
-            if name.lower().endswith('.jpg'):
-                name = name.rsplit('.', 1)[0] + '.png'
-            return image, mask, original_shape, name
+        self.transform = A.Compose(transforms)
 
     def __len__(self):
-        return self.size
+        return len(self.samples)
 
-def get_loader(image_root, gt_root, batchsize, trainsize, shuffle=False, num_workers=4, pin_memory=True, augmentation=False, split='train', color_image=True):
-    dataset = PolypDataset(image_root, gt_root, trainsize, augmentation, split, color_image)
-    return data.DataLoader(dataset=dataset, batch_size=batchsize, shuffle=shuffle, num_workers=num_workers, pin_memory=pin_memory)
-    
+    def __getitem__(self, index):
+        key, image_path, mask_path = self.samples[index]
+
+        image_flag = (
+            cv2.IMREAD_COLOR
+            if self.color_image
+            else cv2.IMREAD_GRAYSCALE
+        )
+
+        image = cv2.imread(str(image_path), image_flag)
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+        if image is None:
+            raise RuntimeError("Cannot read image: {}".format(image_path))
+        if mask is None:
+            raise RuntimeError("Cannot read mask: {}".format(mask_path))
+
+        if self.color_image:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        if image.shape[:2] != mask.shape[:2]:
+            raise RuntimeError(
+                "Image/mask size mismatch for {}: image={} mask={}".format(
+                    key, image.shape[:2], mask.shape[:2]
+                )
+            )
+
+        if int(mask.max()) > 10:
+            mask = (mask >= 128).astype(np.uint8)
+        else:
+            mask = (mask > 0).astype(np.uint8)
+
+        if self.split == "train":
+            transformed = self.transform(
+                image=image,
+                mask=mask,
+            )
+            image_tensor = transformed["image"].float()
+            mask_tensor = transformed["mask"].float()
+
+            if mask_tensor.ndim == 2:
+                mask_tensor = mask_tensor.unsqueeze(0)
+
+            return image_tensor, mask_tensor
+
+        transformed = self.transform(image=image)
+        image_tensor = transformed["image"].float()
+
+        # Validation/test 保留原始分辨率 GT，避免先缩放后再放大。
+        mask_tensor = torch.from_numpy(mask).unsqueeze(0).float()
+        original_size = torch.tensor(
+            mask.shape,
+            dtype=torch.int64,
+        )
+        output_name = "{}.png".format(Path(image_path).stem)
+
+        return (
+            image_tensor,
+            mask_tensor,
+            original_size,
+            output_name,
+        )
+
+
+def get_loader(
+    image_root,
+    gt_root,
+    batchsize,
+    trainsize,
+    shuffle=False,
+    num_workers=4,
+    pin_memory=True,
+    augmentation=False,
+    split="train",
+    color_image=True,
+    seed=2222,
+):
+    dataset = PolypDataset(
+        image_root=image_root,
+        gt_root=gt_root,
+        trainsize=trainsize,
+        augmentation=augmentation,
+        split=split,
+        color_image=color_image,
+    )
+
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+
+    return data.DataLoader(
+        dataset=dataset,
+        batch_size=int(batchsize),
+        shuffle=bool(shuffle),
+        num_workers=int(num_workers),
+        pin_memory=bool(pin_memory),
+        worker_init_fn=_seed_worker,
+        generator=generator,
+        collate_fn=(
+            None
+            if split == "train"
+            else polyp_eval_collate
+        ),
+        persistent_workers=int(num_workers) > 0,
+    )

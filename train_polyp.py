@@ -1,278 +1,706 @@
-import os
-import time
-import logging
 import argparse
+import csv
+import json
+import logging
+import os
+import sys
+import time
 from datetime import datetime
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from tensorboardX import SummaryWriter
+from torch.cuda.amp import GradScaler, autocast
+from tqdm import tqdm
 
-# Project-specific imports
-from lib.networks import EMCADNet
-from utils.dataloader_polyp import get_loader as get_loader
-from utils.utils import clip_gradient, adjust_lr, AvgMeter, cal_params_flops
+from utils.dataloader_polyp import get_loader
+from utils.polyp_utils import (
+    build_model,
+    evaluate_loader,
+    load_checkpoint,
+    model_outputs,
+    resolve_device,
+    save_checkpoint,
+    seed_everything,
+    supervised_structure_loss,
+)
 
 
-def structure_loss(pred, mask, w=1):
-    weit = 1 + 5 * torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
-    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduction='none')
-    wbce = (weit * wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
-
-    pred = torch.sigmoid(pred)
-    inter = ((pred * mask) * weit).sum(dim=(2, 3))
-    union = ((pred + mask) * weit).sum(dim=(2, 3))
-    wiou = 1 - (inter + 1) / (union - inter + 1)
-
-    return (w * (wbce + wiou)).mean()
-
-def dice_coefficient(predicted, labels):
-    if predicted.device != labels.device:
-        labels = labels.to(predicted.device)
-    smooth = 1e-6
-    predicted_flat = predicted.contiguous().view(-1)
-    labels_flat = labels.contiguous().view(-1)
-    intersection = (predicted_flat * labels_flat).sum()
-    total = predicted_flat.sum() + labels_flat.sum()
-    return (2. * intersection + smooth) / (total + smooth)
-
-def iou(predicted, labels):
-    if predicted.device != labels.device:
-        labels = labels.to(predicted.device)
-    smooth = 1e-6
-    predicted_flat = predicted.contiguous().view(-1)
-    labels_flat = labels.contiguous().view(-1)
-    intersection = (predicted_flat * labels_flat).sum()
-    union = predicted_flat.sum() + labels_flat.sum() - intersection
-    return (intersection + smooth) / (union + smooth)
-
-def test(model, path, dataset, opt):
-    data_path = os.path.join(path, dataset)
-    image_root = f'{data_path}/images/'
-    gt_root = f'{data_path}/masks/'
-    model.eval()
-    
-    test_loader = get_loader(
-        image_root=image_root, gt_root=gt_root, 
-        batchsize=opt.test_batchsize, trainsize=opt.img_size,
-        shuffle=False, split='test', color_image=opt.color_image
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train EMCAD on one Polyp dataset"
     )
-    
-    DSC, IOU, total_images = 0.0, 0.0, 0
-    with torch.no_grad():
-        for pack in test_loader:
-            images, gts, original_shapes, _ = pack       
-            images = images.cuda()
-            gts = gts.cuda().float()
 
-            ress = model(images)
-            if not isinstance(ress, list):
-                ress = [ress]
-            # Take the primary output
-            predictions = ress[-1]
-            
-            for i in range(len(images)):
-                # Note: original_shapes in some loaders is [W, H], in others [H, W]
-                # We ensure it matches your specific data loader's return order
-                h_orig, w_orig = int(original_shapes[0][i]), int(original_shapes[1][i])
-                
-                # 1. Prediction Resize (Bilinear for soft maps)
-                p = predictions[i].unsqueeze(0)
-                pred_resized = F.interpolate(p, size=(h_orig, w_orig), mode='bilinear', align_corners=False)
-                pred_resized = pred_resized.sigmoid().squeeze()
-                
-                # 2. Local Normalization
-                pred_resized = (pred_resized - pred_resized.min()) / (pred_resized.max() - pred_resized.min() + 1e-8)
-                
-                # 3. GT Resize (NEAREST to maintain binary mask integrity)
-                g = gts[i].unsqueeze(0)
-                gt_resized = F.interpolate(g, size=(h_orig, w_orig), mode='nearest').squeeze()
+    parser.add_argument(
+        "--data_root",
+        default="../data/polyp/target",
+    )
+    parser.add_argument(
+        "--dataset_name",
+        default="ClinicDB",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default="./model_pth/Polyp",
+    )
+    parser.add_argument(
+        "--run_name",
+        default=None,
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+    )
 
-                #print(pred_resized.shape, gt_resized.shape, g.shape)
+    parser.add_argument(
+        "--encoder",
+        default="pvt_v2_b2",
+    )
+    parser.add_argument(
+        "--kernel_sizes",
+        type=int,
+        nargs="+",
+        default=[1, 3, 5],
+    )
+    parser.add_argument(
+        "--expansion_factor",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--lgag_ks",
+        type=int,
+        default=3,
+    )
+    parser.add_argument(
+        "--activation_mscb",
+        default="relu6",
+    )
+    parser.add_argument(
+        "--no_dw_parallel",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--concatenation",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no_pretrain",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--pretrained_dir",
+        default="./pretrained_pth/pvt/",
+    )
 
-                # 4. Binary Thresholding
-                input_binary = (pred_resized >= 0.5).float()
-                target_binary = (gt_resized >= 0.2).float() 
+    parser.add_argument(
+        "--supervision",
+        choices=[
+            "paper",
+            "deep_supervision",
+            "last_layer",
+            "mutation",
+        ],
+        default="paper",
+    )
+    parser.add_argument(
+        "--img_size",
+        type=int,
+        default=352,
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=16,
+    )
+    parser.add_argument(
+        "--val_batch_size",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--max_epochs",
+        type=int,
+        default=200,
+    )
+    parser.add_argument(
+        "--base_lr",
+        type=float,
+        default=1e-4,
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=1e-4,
+    )
+    parser.add_argument(
+        "--clip",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--scheduler",
+        choices=["constant", "cosine"],
+        default="constant",
+    )
+    parser.add_argument(
+        "--min_lr",
+        type=float,
+        default=1e-6,
+    )
+    parser.add_argument(
+        "--scale_rates",
+        type=float,
+        nargs="+",
+        default=[0.75, 1.0, 1.25],
+    )
+    parser.add_argument(
+        "--no_multi_scale",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no_augmentation",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--grayscale",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--n_gpu",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=2222,
+    )
+    parser.add_argument(
+        "--deterministic",
+        type=int,
+        choices=[0, 1],
+        default=1,
+    )
+    parser.add_argument(
+        "--validate_every",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--save_every",
+        type=int,
+        default=50,
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--max_train_batches",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--max_valid_cases",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+    )
 
-                # Applying original thresholding (0.5 for pred, 0.2 for target) 
-                DSC += dice_coefficient(input_binary, target_binary).item()
-                IOU += iou(input_binary, target_binary).item()
-                total_images += 1
-
-    return DSC / total_images, IOU / total_images, total_images
-
-def train(train_loader, model, optimizer, epoch, opt, model_name):
-    model.train()
-    global best, test_dice_at_best_val, total_train_time, dict_plot
-    
-    epoch_start = time.time()
-    loss_record = AvgMeter()
-    size_rates = [0.75, 1, 1.25] 
-    total_step = len(train_loader)
-
-    for i, (images, gts) in enumerate(train_loader, start=1):
-        for rate in size_rates:            
-            optimizer.zero_grad()
-            images, gts = Variable(images).cuda(), Variable(gts).float().cuda()
-    
-            if rate != 1:
-                trainsize = int(round(opt.img_size * rate / 32) * 32)
-                images = F.interpolate(images, size=(trainsize, trainsize), mode='bilinear', align_corners=True)
-                gts = F.interpolate(gts, size=(trainsize, trainsize), mode='nearest')
-            
-            P = model(images)
-            if not isinstance(P, list):
-                P = [P]
-            loss_p1 = structure_loss(P[0], gts)
-            loss_p2 = structure_loss(P[1], gts)
-            loss_p3 = structure_loss(P[2], gts)
-            loss_p4 = structure_loss(P[3], gts)
-            loss_p1234 = structure_loss(P[0]+P[1]+P[2]+P[3], gts)
-
-            weights = [1, 1, 1, 1, 1]
-            loss = weights[0]*loss_p1 + weights[1]*loss_p2 + weights[2]*loss_p3 + weights[3]*loss_p4 + weights[4]*loss_p1234
-
-            loss.backward()
-            clip_gradient(optimizer, opt.clip)
-            optimizer.step()
-            
-            if rate == 1:
-                loss_record.update(loss.data, opt.batchsize)
-                
-        if i % 100 == 0 or i == total_step:
-            print(f'{datetime.now()} Epoch [{epoch:03d}/{opt.epoch:03d}], Step [{i:04d}/{total_step:04d}], '
-                  f'LR: {optimizer.param_groups[0]["lr"]:.6f}, Loss: {loss_record.show():.4f}')
-        
-    total_train_time += (time.time() - epoch_start)
-    
-    # Save Last
-    save_path = opt.train_save
-    os.makedirs(save_path, exist_ok=True)
-    torch.save(model.state_dict(), os.path.join(save_path, f"{model_name}-last.pth"))
-
-    # Validation and Testing
-    epoch_results = {}
-    for ds in ['test', 'val']:
-        d_dice, d_iou, _ = test(model, opt.test_path, ds, opt)
-        epoch_results[ds] = d_dice
-        logging.info(f'Epoch: {epoch}, Dataset: {ds}, Dice: {d_dice:.4f}, IoU: {d_iou:.4f}')
-        print(f'Epoch: {epoch}, Dataset: {ds}, Dice: {d_dice:.4f}, IoU: {d_iou:.4f}')
-        dict_plot[ds].append(d_dice)
-
-    # Check if Best Validation Dice
-    if epoch_results['val'] > best:
-        logging.info(f"### Best Model Saved (Dice improved from {best:.4f} to {epoch_results['val']:.4f}) ###")
-        print(f"### Best Model Saved (Dice improved from {best:.4f} to {epoch_results['val']:.4f}) ###")
-        best = epoch_results['val']
-        test_dice_at_best_val = epoch_results['test'] # Track test dice at peak val
-        torch.save(model.state_dict(), os.path.join(save_path, f"{model_name}-best.pth"))
-    
-if __name__ == '__main__':
-    # Initial defaults
-    dataset_name = 'ClinicDB' #'CVC-ColonDB' #'Kvasir' #ETIS-LaribPolypDB' #BCAI-IGH
-    
-    parser = argparse.ArgumentParser()
-    # network related parameters
-    parser.add_argument('--encoder', type=str,
-                        default='pvt_v2_b2', help='Name of encoder: pvt_v2_b2, pvt_v2_b0, resnet18, resnet34 ...')
-    parser.add_argument('--expansion_factor', type=int,
-                        default=2, help='expansion factor in MSCB block')
-    parser.add_argument('--kernel_sizes', type=int, nargs='+',
-                        default=[1, 3, 5], help='multi-scale kernel sizes in MSDC block')
-    parser.add_argument('--lgag_ks', type=int,
-                        default=3, help='Kernel size in LGAG')
-    parser.add_argument('--activation_mscb', type=str,
-                        default='relu6', help='activation used in MSCB: relu6 or relu')
-    parser.add_argument('--no_dw_parallel', action='store_true', 
-                        default=False, help='use this flag to disable depth-wise parallel convolutions')
-    parser.add_argument('--concatenation', action='store_true', 
-                        default=False, help='use this flag to concatenate feature maps in MSDC block')
-    parser.add_argument('--no_pretrain', action='store_true', 
-                        default=False, help='use this flag to turn off loading pretrained enocder weights')
-    parser.add_argument('--pretrained_dir', type=str,
-                        default='./pretrained_pth/pvt/', help='path to pretrained encoder dir')
-    parser.add_argument('--supervision', type=str,
-                    default='mutation', help='loss supervision: mutation, deep_supervision or last_layer')    
-    parser.add_argument('--epoch', type=int, default=200)
-    parser.add_argument('--lr', type=float, default=0.0005) # base learning rate is 0.0005 for CosineAnnealingLR and 0.0001 for no scheduler
-    parser.add_argument('--batchsize', type=int, default=8)
-    parser.add_argument('--test_batchsize', type=int, default=8)
-    parser.add_argument('--img_size', type=int, default=352)
-    parser.add_argument('--clip', type=float, default=0.5)
-    parser.add_argument('--decay_rate', type=float, default=0.1)
-    parser.add_argument('--decay_epoch', type=int, default=300)
-    parser.add_argument('--color_image', default=True)
-    parser.add_argument('--augmentation', default=True)
-    parser.add_argument('--train_path', type=str, default=f'../data/polyp/target/{dataset_name}/train/')
-    parser.add_argument('--test_path', type=str, default=f'../data/polyp/target/{dataset_name}/')
-    parser.add_argument('--train_save', type=str, default='') 
-    opt = parser.parse_args()
-
-    for run in [1,2,3,4,5]:
-        dict_plot = {'val': [], 'test': []}
-        best = 0.0
-        test_dice_at_best_val = 0.0
-        total_train_time = 0
-
-        if opt.concatenation:
-            aggregation = 'concat'
-        else: 
-            aggregation = 'add'
-        
-        if opt.no_dw_parallel:
-            dw_mode = 'series'
-        else: 
-            dw_mode = 'parallel'
-
-        timestamp = time.strftime('%H%M%S')
-        run_id = (f"{dataset_name}_{opt.encoder}_EMCAD_kernel_sizes_{opt.kernel_sizes}_dw_{dw_mode}_{aggregation}_lgag_ks_{opt.lgag_ks}_ef{opt.expansion_factor}_act_mscb_{opt.activation_mscb}_bs{opt.batchsize}_cas_lr{opt.lr}_"
-                      f"e{opt.epoch}_aug{opt.augmentation}_run{run}_t{timestamp}")
-        run_id = run_id.replace('[', '').replace(']', '').replace(', ', '_')
-        opt.train_save = f'./model_pth/{run_id}/'
-        
-        os.makedirs('logs', exist_ok=True)
-        os.makedirs(opt.train_save, exist_ok=True)
-        
-        logging.basicConfig(filename=f'logs/train_log_{run_id}.log', level=logging.INFO, 
-                            format='[%(asctime)s] %(message)s', force=True)
+    return parser.parse_args()
 
 
-        # Build model
-        #model = EMCADNet(dw_parallel=dw_parallel, expansion_factor=expansion_factor, add=add, kernel_sizes=kernel_sizes, att_ks=att_ks, activation=activation, encoder=encoder, pretrain=pretrain, head=head, bbox=False, cds=False) # head='SAH'
-        model = EMCADNet(num_classes=1, kernel_sizes=opt.kernel_sizes, expansion_factor=opt.expansion_factor, dw_parallel=not opt.no_dw_parallel, add=not opt.concatenation, lgag_ks=opt.lgag_ks, activation=opt.activation_mscb, encoder=opt.encoder, pretrain= not opt.no_pretrain, pretrained_dir=opt.pretrained_dir)
+def append_history(path, row):
+    fieldnames = [
+        "epoch",
+        "train_loss",
+        "val_dice",
+        "val_iou",
+        "learning_rate",
+        "elapsed_seconds",
+    ]
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        '''if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            model = nn.DataParallel(model)'''
+    exists = os.path.isfile(path)
 
-        model.to(device)
-
-        print(f"Encoder: {opt.encoder} | Decoder: EMCAD")
-        cal_params_flops(model, opt.img_size, logging)
-        optimizer = torch.optim.AdamW(model.parameters(), opt.lr, weight_decay=1e-4)
-        scheduler = CosineAnnealingLR(optimizer, T_max=opt.epoch, eta_min=1e-6)
-
-        train_loader = get_loader(
-            image_root=f'{opt.train_path}/images/', gt_root=f'{opt.train_path}/masks/',
-            batchsize=opt.batchsize, trainsize=opt.img_size, 
-            shuffle=True, augmentation=opt.augmentation, split='train', color_image=opt.color_image
+    with open(
+        path,
+        "a",
+        newline="",
+        encoding="utf-8",
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=fieldnames,
         )
 
-        for epoch in range(1, opt.epoch + 1):
-            adjust_lr(optimizer, opt.lr, epoch, opt.decay_rate, opt.decay_epoch)
-            train(train_loader, model, optimizer, epoch, opt, run_id)
-            scheduler.step()
-        # FINAL SUMMARY
-        
-        summary = (f"\n{'='*40}\nFINAL RESULTS: {run_id}\n"
-                   f"Best Val Dice: {best:.4f}\n"
-                   f"Test Dice at Best Val: {test_dice_at_best_val:.4f}\n"
-                   f"Total Train Time: {total_train_time:.2f}s\n{'='*40}")
-        print(summary)
-        logging.info(summary)
-        
-        
+        if not exists:
+            writer.writeheader()
+
+        writer.writerow(row)
+
+
+def append_validation_rows(path, epoch, rows):
+    fieldnames = [
+        "epoch",
+        "case_name",
+        "dice",
+        "iou",
+    ]
+
+    exists = os.path.isfile(path)
+
+    with open(
+        path,
+        "a",
+        newline="",
+        encoding="utf-8",
+    ) as stream:
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=fieldnames,
+        )
+
+        if not exists:
+            writer.writeheader()
+
+        for row in rows:
+            writer.writerow(
+                {
+                    "epoch": epoch,
+                    "case_name": row["case_name"],
+                    "dice": row["dice"],
+                    "iou": row["iou"],
+                }
+            )
+
+
+def resized_batch(images, masks, image_size, rate):
+    if rate == 1.0:
+        return images, masks
+
+    scaled = int(
+        round(image_size * rate / 32.0) * 32
+    )
+
+    images = F.interpolate(
+        images,
+        size=(scaled, scaled),
+        mode="bilinear",
+        align_corners=False,
+    )
+
+    masks = F.interpolate(
+        masks,
+        size=(scaled, scaled),
+        mode="nearest",
+    )
+
+    return images, masks
+
+
+def main():
+    args = parse_args()
+
+    if args.validate_every < 1:
+        raise ValueError(
+            "--validate_every must be at least 1"
+        )
+
+    if not 0.0 < args.threshold < 1.0:
+        raise ValueError(
+            "--threshold must be between 0 and 1"
+        )
+
+    dataset_root = os.path.join(
+        args.data_root,
+        args.dataset_name,
+    )
+    train_root = os.path.join(
+        dataset_root,
+        "train",
+    )
+    val_root = os.path.join(
+        dataset_root,
+        "val",
+    )
+
+    required = [
+        os.path.join(train_root, "images"),
+        os.path.join(train_root, "masks"),
+        os.path.join(val_root, "images"),
+        os.path.join(val_root, "masks"),
+    ]
+
+    missing = [
+        path
+        for path in required
+        if not os.path.isdir(path)
+    ]
+
+    if missing:
+        raise FileNotFoundError(
+            "Missing Polyp train/val directories:\n"
+            + "\n".join(missing)
+        )
+
+    seed_everything(
+        args.seed,
+        bool(args.deterministic),
+    )
+
+    device = resolve_device(args.device)
+    pin_memory = device.type == "cuda"
+
+    train_loader = get_loader(
+        image_root=os.path.join(
+            train_root,
+            "images",
+        ),
+        gt_root=os.path.join(
+            train_root,
+            "masks",
+        ),
+        batchsize=args.batch_size,
+        trainsize=args.img_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=pin_memory,
+        augmentation=not args.no_augmentation,
+        split="train",
+        color_image=not args.grayscale,
+        seed=args.seed,
+    )
+
+    val_loader = get_loader(
+        image_root=os.path.join(
+            val_root,
+            "images",
+        ),
+        gt_root=os.path.join(
+            val_root,
+            "masks",
+        ),
+        batchsize=args.val_batch_size,
+        trainsize=args.img_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=pin_memory,
+        augmentation=False,
+        split="val",
+        color_image=not args.grayscale,
+        seed=args.seed,
+    )
+
+    overlap = (
+        set(train_loader.dataset.stems)
+        & set(val_loader.dataset.stems)
+    )
+
+    if overlap:
+        raise RuntimeError(
+            "Train/val leakage detected: {}".format(
+                sorted(overlap)[:10]
+            )
+        )
+
+    if args.run_name is None:
+        args.run_name = (
+            "train_Polyp_{}_{}".format(
+                args.dataset_name,
+                datetime.now().strftime(
+                    "%Y-%m-%d_%H%M%S"
+                ),
+            )
+        )
+
+    run_dir = os.path.abspath(
+        os.path.join(
+            args.output_dir,
+            args.dataset_name,
+            args.run_name,
+        )
+    )
+
+    os.makedirs(run_dir, exist_ok=True)
+
+    logging.basicConfig(
+        filename=os.path.join(
+            run_dir,
+            "train.log",
+        ),
+        level=logging.INFO,
+        format="[%(asctime)s.%(msecs)03d] %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+    logging.getLogger().addHandler(
+        logging.StreamHandler(sys.stdout)
+    )
+
+    configuration = {
+        **vars(args),
+        "data_root": os.path.abspath(
+            args.data_root
+        ),
+        "dataset_root": os.path.abspath(
+            dataset_root
+        ),
+        "run_dir": run_dir,
+        "train_images": len(train_loader.dataset),
+        "val_images": len(val_loader.dataset),
+        "train_manifest_sha256": (
+            train_loader.dataset.manifest_sha256
+        ),
+        "val_manifest_sha256": (
+            val_loader.dataset.manifest_sha256
+        ),
+        "command": " ".join(sys.argv),
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda,
+    }
+
+    with open(
+        os.path.join(run_dir, "config.json"),
+        "w",
+        encoding="utf-8",
+    ) as stream:
+        json.dump(
+            configuration,
+            stream,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    logging.info("args=%s", args)
+    logging.info("device=%s", device)
+    logging.info(
+        "train_images=%d val_images=%d",
+        len(train_loader.dataset),
+        len(val_loader.dataset),
+    )
+
+    model = build_model(
+        args,
+        pretrain=not args.no_pretrain,
+    )
+
+    if args.checkpoint:
+        if not os.path.isfile(args.checkpoint):
+            raise FileNotFoundError(
+                "Checkpoint not found: {}".format(
+                    args.checkpoint
+                )
+            )
+        load_checkpoint(
+            model,
+            args.checkpoint,
+        )
+
+    model.to(device)
+
+    if device.type == "cuda" and args.n_gpu > 1:
+        available = torch.cuda.device_count()
+
+        if args.n_gpu > available:
+            raise RuntimeError(
+                "Requested {} GPUs, but only {} are visible".format(
+                    args.n_gpu,
+                    available,
+                )
+            )
+
+        model = nn.DataParallel(
+            model,
+            device_ids=list(
+                range(args.n_gpu)
+            ),
+        )
+
+    logging.info(
+        "model_parameters=%d",
+        sum(
+            parameter.numel()
+            for parameter in model.parameters()
+        ),
+    )
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.base_lr,
+        weight_decay=args.weight_decay,
+    )
+
+    scheduler = None
+
+    if args.scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.max_epochs,
+            eta_min=args.min_lr,
+        )
+
+    scaler = GradScaler(
+        enabled=args.amp and device.type == "cuda"
+    )
+
+    writer = SummaryWriter(
+        os.path.join(run_dir, "tensorboard")
+    )
+
+    history_path = os.path.join(
+        run_dir,
+        "train_history.csv",
+    )
+    validation_path = os.path.join(
+        run_dir,
+        "validation_metrics.csv",
+    )
+
+    best_dice = float("-inf")
+    best_epoch = 0
+    global_step = 0
+    scale_rates = (
+        [1.0]
+        if args.no_multi_scale
+        else args.scale_rates
+    )
+    started = time.time()
+
+    for epoch in range(
+        1,
+        args.max_epochs + 1,
+    ):
+        model.train()
+        epoch_losses = []
+
+        progress = tqdm(
+            enumerate(train_loader),
+            total=len(train_loader),
+            desc="epoch {}/{}".format(
+                epoch,
+                args.max_epochs,
+            ),
+        )
+
+        for batch_index, (images, masks) in progress:
+            if (
+                args.max_train_batches
+                and batch_index >= args.max_train_batches
+            ):
+                break
+
+            images = images.to(
+                device=device,
+                dtype=torch.float32,
+            )
+            masks = masks.to(
+                device=device,
+                dtype=torch.float32,
+            )
+
+            for rate in scale_rates:
+                scaled_images, scaled_masks = resized_batch(
+                    images,
+                    masks,
+                    args.img_size,
+                    float(rate),
+                )
+
+                optimizer.zero_grad(
+                    set_to_none=True
+                )
+
+                with autocast(
+                    enabled=scaler.is_enabled()
+                ):
+                    outputs = model_outputs(
+                        model,
+                        scaled_images,
+                        mode="train",
+                    )
+
+                    loss = supervised_structure_loss(
+                        outputs,
+                        scaled_masks,
+                        args.supervision,
+                    )
+
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+
+                torch.nn.utils.clip_grad_value_(
+                    model.parameters(),
+                    args.clip,
+                )
+
+                scaler.step(optimizer)
+                scaler.update()
+
+                global_step += 1
+                loss_value = float(
+                    loss.item()
+                )
+                epoch_losses.append(loss_value)
+
+                writer.add_scalar(
+                    "train/loss",
+                    loss_value,
+                    global_step,
+                )
+                writer.add_scalar(
+                    "train/lr",
+                    optimizer.param_groups[0]["lr"],
+                    global_step,
+                )
+
+            progress.set_postfix(
+                loss="{:.4f}".format(
+                    float(
+                        np.mean(
+                            epoch_losses[
+                                -len(scale_rates):
+                            ]
+                        )
+                    )
+                )
+            )
+
+        if not epoch_losses:
+            raise RuntimeError(
+                "No Polyp training batches were processed"
+            )
+
+        train_loss = float(
+            np.mean(epoch_losses)
+        )
+        learning_rate = float(
+            optimizer.param_groups[0]["lr"]
+        )
+
+        save_checkpoint(
+            model,
+            os.path.join(
+                run_dir,
+                "last.pth",
+            ),
+        )
+
+        val_dice = ""
+        val

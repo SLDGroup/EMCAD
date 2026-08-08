@@ -1,186 +1,458 @@
-import os
-import time
-import torch
-import torch.nn.functional as F
-import numpy as np
-import pandas as pd
-import cv2
 import argparse
-from tqdm import tqdm
+import json
+import logging
+import math
+import os
+import sys
+from pathlib import Path
 
-# Project-specific imports
-from lib.networks import EMCADNet
-from utils.dataloader_polyp import get_loader
-from medpy.metric.binary import hd95
+import torch
 
-def dice_coefficient(predicted, labels):
-    if predicted.device != labels.device:
-        labels = labels.to(predicted.device)
-    smooth = 1e-6
-    predicted_flat = predicted.contiguous().view(-1)
-    labels_flat = labels.contiguous().view(-1)
-    intersection = (predicted_flat * labels_flat).sum()
-    total = predicted_flat.sum() + labels_flat.sum()
-    return (2. * intersection + smooth) / (total + smooth)
+from utils.dataloader_polyp import (
+    SUPPORTED_EXTENSIONS,
+    get_loader,
+)
+from utils.polyp_utils import (
+    build_model,
+    evaluate_loader,
+    load_checkpoint,
+    resolve_device,
+    seed_everything,
+    write_metrics_csv,
+)
 
-def iou(predicted, labels):
-    if predicted.device != labels.device:
-        labels = labels.to(predicted.device)
-    smooth = 1e-6
-    predicted_flat = predicted.contiguous().view(-1)
-    labels_flat = labels.contiguous().view(-1)
-    intersection = (predicted_flat * labels_flat).sum()
-    union = predicted_flat.sum() + labels_flat.sum() - intersection
-    return (intersection + smooth) / (union + smooth)
 
-def get_binary_metrics(pred, gt):
-    tp = (pred * gt).sum().item()
-    tn = ((1 - pred) * (1 - gt)).sum().item()
-    fp = (pred * (1 - gt)).sum().item()
-    fn = ((1 - pred) * gt).sum().item()
-    
-    sensitivity = tp / (tp + fn + 1e-8)
-    specificity = tn / (tn + fp + 1e-8)
-    precision = tp / (tp + fp + 1e-8)
-    
-    try:
-        if pred.sum() > 0 and gt.sum() > 0:
-            hd_val = hd95(pred.cpu().numpy(), gt.cpu().numpy())
-        else:
-            hd_val = 100.0
-    except:
-        hd_val = 100.0
-        
-    return sensitivity, specificity, precision, hd_val
-
-def test(model, path, dataset, opt, save_base=None):
-    data_path = os.path.join(path, dataset)
-    image_root = f'{data_path}/images/'
-    gt_root = f'{data_path}/masks/'
-    model.eval()
-    
-    test_loader = get_loader(
-        image_root=image_root, gt_root=gt_root, 
-        batchsize=opt.test_batchsize, trainsize=opt.img_size,
-        shuffle=False, split='test', color_image=opt.color_image
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Evaluate EMCAD on one Polyp split"
     )
-    
-    DSC, IOU, total_images = 0.0, 0.0, 0
-    detailed_results = []
 
-    with torch.no_grad():
-        for pack in tqdm(test_loader, desc=f"Inference on {dataset}"):
-            images, gts, original_shapes, names = pack       
-            images, gts = images.cuda(), gts.cuda().float()
+    parser.add_argument(
+        "--checkpoint",
+        required=True,
+    )
+    parser.add_argument(
+        "--data_root",
+        default="../data/polyp/target",
+    )
+    parser.add_argument(
+        "--dataset_name",
+        default="ClinicDB",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["val", "test"],
+        default="test",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+    )
+    parser.add_argument(
+        "--output_csv",
+        default=None,
+    )
 
-            ress = model(images)
-            if not isinstance(ress, list):
-                ress = [ress]
-            # Take the primary output (EMCADNet usually uses the last item for final prediction)
-            predictions = ress[-1]
-            
-            for i in range(len(images)):
-                h_orig, w_orig = int(original_shapes[0][i]), int(original_shapes[1][i])
-                
-                p = predictions[i].unsqueeze(0)
-                pred_resized = F.interpolate(p, size=(h_orig, w_orig), mode='bilinear', align_corners=False).sigmoid().squeeze()
-                pred_resized = (pred_resized - pred_resized.min()) / (pred_resized.max() - pred_resized.min() + 1e-8)
-                
-                g = gts[i].unsqueeze(0)
-                gt_resized = F.interpolate(g, size=(h_orig, w_orig), mode='nearest').squeeze()
+    parser.add_argument(
+        "--encoder",
+        default="pvt_v2_b2",
+    )
+    parser.add_argument(
+        "--kernel_sizes",
+        type=int,
+        nargs="+",
+        default=[1, 3, 5],
+    )
+    parser.add_argument(
+        "--expansion_factor",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--lgag_ks",
+        type=int,
+        default=3,
+    )
+    parser.add_argument(
+        "--activation_mscb",
+        default="relu6",
+    )
+    parser.add_argument(
+        "--no_dw_parallel",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--concatenation",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--pretrained_dir",
+        default="./pretrained_pth/pvt/",
+    )
 
-                input_binary = (pred_resized >= 0.5).float()
-                target_binary = (gt_resized >= 0.2).float()
+    parser.add_argument(
+        "--img_size",
+        type=int,
+        default=352,
+    )
+    parser.add_argument(
+        "--inference_batch_size",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=2222,
+    )
+    parser.add_argument(
+        "--deterministic",
+        type=int,
+        choices=[0, 1],
+        default=1,
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+    )
+    parser.add_argument(
+        "--max_cases",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--grayscale",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--save_probabilities",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no_save_predictions",
+        action="store_true",
+    )
 
-                d = dice_coefficient(input_binary, target_binary).item()
-                io = iou(input_binary, target_binary).item()
-                sens, spec, prec, hd = get_binary_metrics(input_binary, target_binary)
+    return parser.parse_args()
 
-                DSC += d
-                IOU += io
-                total_images += 1
 
-                detailed_results.append({
-                    'Name': names[i], 'Dice': d, 'IoU': io,
-                    'Sensitivity': float('{:.4f}'.format(sens)),
-                    'Specificity': float('{:.4f}'.format(spec)),
-                    'Precision': float('{:.4f}'.format(prec)),
-                    'HD95': float('{:.4f}'.format(hd))
-                })
+def _split_stems(dataset_root, split):
+    image_root = Path(dataset_root) / split / "images"
 
-                if save_base:
-                    pred_img = (input_binary.cpu().numpy() * 255).astype(np.uint8)
-                    cv2.imwrite(os.path.join(save_base, names[i]), pred_img)
+    if not image_root.is_dir():
+        return set()
 
-    return DSC / total_images, IOU / total_images, detailed_results
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--run_id', type=str, required=True)
-    parser.add_argument('--encoder', type=str, default='pvt_v2_b2')
-    parser.add_argument('--expansion_factor', type=int, default=2)
-    parser.add_argument('--kernel_sizes', type=int, nargs='+', default=[1, 3, 5])
-    parser.add_argument('--lgag_ks', type=int, default=3)
-    parser.add_argument('--activation_mscb', type=str, default='relu6')
-    parser.add_argument('--no_dw_parallel', action='store_true', default=False)
-    parser.add_argument('--concatenation', action='store_true', default=False)
-    parser.add_argument('--dataset_name', type=str, default='ClinicDB')
-    parser.add_argument('--split', type=str, default='test')
-    parser.add_argument('--img_size', type=int, default=352)
-    parser.add_argument('--test_batchsize', type=int, default=1)
-    parser.add_argument('--color_image', default=True)
-    parser.add_argument('--test_path', type=str, default='../data/polyp/target/')
-    opt = parser.parse_args()
-
-    # --- Paths ---
-    save_base = f'./predictions_polyp/{opt.run_id}/{opt.dataset_name}/{opt.split}'
-    os.makedirs(save_base, exist_ok=True)
-    os.makedirs('results_polyp', exist_ok=True)
-    model_path = os.path.join(f'./model_pth/{opt.run_id}/', f'{opt.run_id}-best.pth')
-    opt.test_path = f'{opt.test_path}/{opt.dataset_name}/'
-
-    # --- Model Loading ---
-    model = EMCADNet(
-        num_classes=1, 
-        kernel_sizes=opt.kernel_sizes, 
-        expansion_factor=opt.expansion_factor, 
-        dw_parallel=not opt.no_dw_parallel, 
-        add=not opt.concatenation, 
-        lgag_ks=opt.lgag_ks, 
-        activation=opt.activation_mscb, 
-        encoder=opt.encoder, 
-        pretrain=False # Always False for inference
-    ).cuda()
-    
-    model.load_state_dict(torch.load(model_path), strict=False)
-    model.eval()
-
-    # --- Run Inference ---
-    # Adjust test path to match main script behavior
-    mean_dice, mean_iou, results = test(model, opt.test_path, opt.split, opt, save_base=save_base)
-
-    # --- Individual Excel ---
-    df = pd.DataFrame(results)
-    mean_row = df.mean(numeric_only=True).to_dict()
-    mean_row['Name'] = 'AVERAGE'
-    df = pd.concat([df, pd.DataFrame([mean_row])], ignore_index=True)
-    df.to_excel(f'results_polyp/Results_{opt.run_id}_{opt.dataset_name}_{opt.split}.xlsx', index=False)
-
-    # --- Persistent Summary ---
-    summary_file = 'All_Runs_Summary_Polyp.xlsx'
-    avg_data = {
-        'run_id': opt.run_id, 'network': 'EMCADNet', 'dataset': opt.dataset_name,
-        'split': opt.split, 'dice': mean_dice, 'iou': mean_iou,
-        'sensitivity': mean_row['Sensitivity'], 'specificity': mean_row['Specificity'],
-        'precision': mean_row['Precision'], 'HD95': mean_row['HD95']
+    return {
+        path.stem.casefold()
+        for path in image_root.iterdir()
+        if (
+            path.is_file()
+            and path.suffix.lower()
+            in SUPPORTED_EXTENSIONS
+        )
     }
-    df_new = pd.DataFrame([avg_data])
 
-    if os.path.exists(summary_file):
-        df_existing = pd.read_excel(summary_file)
-        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-        df_combined.to_excel(summary_file, index=False)
-    else:
-        df_new.to_excel(summary_file, index=False)
 
-    print(f"Evaluation complete. Summary appended to {summary_file}")
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {
+            key: _json_safe(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+
+    return value
+
+
+def main():
+    args = parse_args()
+
+    if not os.path.isfile(args.checkpoint):
+        raise FileNotFoundError(
+            "Checkpoint not found: {}".format(
+                args.checkpoint
+            )
+        )
+
+    if not 0.0 < args.threshold < 1.0:
+        raise ValueError(
+            "--threshold must be between 0 and 1"
+        )
+
+    dataset_root = os.path.join(
+        args.data_root,
+        args.dataset_name,
+    )
+    split_root = os.path.join(
+        dataset_root,
+        args.split,
+    )
+
+    required = [
+        os.path.join(split_root, "images"),
+        os.path.join(split_root, "masks"),
+    ]
+
+    missing = [
+        path
+        for path in required
+        if not os.path.isdir(path)
+    ]
+
+    if missing:
+        raise FileNotFoundError(
+            "Missing Polyp evaluation directories:\n"
+            + "\n".join(missing)
+        )
+
+    selected_stems = _split_stems(
+        dataset_root,
+        args.split,
+    )
+
+    for other_split in ("train", "val", "test"):
+        if other_split == args.split:
+            continue
+
+        overlap = (
+            selected_stems
+            & _split_stems(
+                dataset_root,
+                other_split,
+            )
+        )
+
+        if overlap:
+            raise RuntimeError(
+                "{} and {} overlap: {}".format(
+                    args.split,
+                    other_split,
+                    sorted(overlap)[:10],
+                )
+            )
+
+    seed_everything(
+        args.seed,
+        bool(args.deterministic),
+    )
+
+    device = resolve_device(args.device)
+
+    loader = get_loader(
+        image_root=os.path.join(
+            split_root,
+            "images",
+        ),
+        gt_root=os.path.join(
+            split_root,
+            "masks",
+        ),
+        batchsize=args.inference_batch_size,
+        trainsize=args.img_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=device.type == "cuda",
+        augmentation=False,
+        split=args.split,
+        color_image=not args.grayscale,
+        seed=args.seed,
+    )
+
+    checkpoint = os.path.abspath(args.checkpoint)
+    checkpoint_dir = os.path.dirname(checkpoint)
+
+    output_dir = os.path.abspath(
+        args.output_dir
+        or os.path.join(
+            checkpoint_dir,
+            "{}_{}_outputs".format(
+                args.split,
+                args.dataset_name,
+            ),
+        )
+    )
+
+    output_csv = os.path.abspath(
+        args.output_csv
+        or os.path.join(
+            output_dir,
+            "test_metrics.csv",
+        )
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    logging.basicConfig(
+        filename=os.path.join(
+            output_dir,
+            "test.log",
+        ),
+        level=logging.INFO,
+        format="[%(asctime)s.%(msecs)03d] %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+    logging.getLogger().addHandler(
+        logging.StreamHandler(sys.stdout)
+    )
+
+    logging.info("args=%s", args)
+    logging.info("device=%s", device)
+    logging.info(
+        "images=%d",
+        len(loader.dataset),
+    )
+
+    model = build_model(
+        args,
+        pretrain=False,
+    )
+
+    load_checkpoint(
+        model,
+        checkpoint,
+    )
+
+    model.to(device).eval()
+
+    rows, mean_row, std_row = evaluate_loader(
+        model=model,
+        loader=loader,
+        device=device,
+        threshold=args.threshold,
+        max_cases=args.max_cases,
+        output_dir=(
+            None
+            if args.no_save_predictions
+            else output_dir
+        ),
+        save_probabilities=args.save_probabilities,
+        compute_surface=True,
+        description="Polyp {}".format(args.split),
+    )
+
+    write_metrics_csv(
+        output_csv,
+        rows,
+        mean_row,
+        std_row,
+    )
+
+    report = {
+        "dataset_name": args.dataset_name,
+        "split": args.split,
+        "checkpoint": checkpoint,
+        "output_dir": output_dir,
+        "output_csv": output_csv,
+        "evaluated_images": len(rows),
+        "dataset_images": len(loader.dataset),
+        "manifest_sha256": loader.dataset.manifest_sha256,
+        "threshold": args.threshold,
+        "macro_mean": mean_row,
+        "macro_std": std_row,
+        "metric_policy": {
+            "aggregation": (
+                "per-image macro mean and population std"
+            ),
+            "dice_and_iou": (
+                "binary masks at fixed sigmoid threshold"
+            ),
+            "hd95_and_assd_unit": "pixels",
+            "surface_one_empty": (
+                "NaN and surface_distance_defined=0"
+            ),
+            "surface_both_empty": "0 pixels",
+        },
+        "args": vars(args),
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda,
+    }
+
+    with open(
+        os.path.join(
+            output_dir,
+            "test_summary.json",
+        ),
+        "w",
+        encoding="utf-8",
+    ) as stream:
+        json.dump(
+            _json_safe(report),
+            stream,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    with open(
+        os.path.join(
+            output_dir,
+            "test_config.json",
+        ),
+        "w",
+        encoding="utf-8",
+    ) as stream:
+        json.dump(
+            _json_safe(
+                {
+                    **vars(args),
+                    "checkpoint": checkpoint,
+                    "data_root": os.path.abspath(
+                        args.data_root
+                    ),
+                    "output_dir": output_dir,
+                    "output_csv": output_csv,
+                }
+            ),
+            stream,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    print("metric          MEAN          STD")
+
+    for name in (
+        "dice",
+        "iou",
+        "sensitivity",
+        "specificity",
+        "precision",
+        "accuracy",
+        "hd95",
+        "assd",
+    ):
+        print(
+            "{:<12} {:>12.6f} {:>12.6f}".format(
+                name,
+                mean_row[name],
+                std_row[name],
+            )
+        )
+
+    print(
+        "SURFACE_VALID={}/{}".format(
+            mean_row["surface_distance_defined"],
+            len(rows),
+        )
+    )
+    print("CSV=" + output_csv)
+    print("OUTPUT_DIR=" + output_dir)
+
+
+if __name__ == "__main__":
+    main()
