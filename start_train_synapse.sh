@@ -2,8 +2,8 @@
 set -euo pipefail
 
 #conda路径、环境名参数化
-CONDA_BASE="base/mambaforge"
-CONDA_ENV_NAME="sld_emcad"
+CONDA_BASE="/base/mambaforge"
+CONDA_ENV_NAME="sld_emcad_251"
 
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +26,7 @@ MAX_EPOCHS=300
 BASE_LR=1e-4
 SUPERVISION="mutation"
 
-LIST_DIR="${PROJECT_DIR}/data/Synapse/lists/lists_Synapse"
+LIST_DIR="${PROJECT_DIR}/../data/Synapse/lists/lists_Synapse"
 ROOT_PATH="../data/Synapse/train_npz"
 VOLUME_PATH="../data/Synapse/test_vol_h5"
 DETERMINISTIC=1
