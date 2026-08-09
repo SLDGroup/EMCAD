@@ -703,4 +703,141 @@ def main():
         )
 
         val_dice = ""
-        val
+        val_iou = ""
+
+        if (
+            epoch % args.validate_every == 0
+            or epoch == args.max_epochs
+        ):
+            val_rows, val_mean, _ = evaluate_loader(
+                model=model,
+                loader=val_loader,
+                device=device,
+                threshold=args.threshold,
+                max_cases=args.max_valid_cases,
+                output_dir=None,
+                compute_surface=False,
+                description="Polyp val",
+            )
+
+            val_dice = val_mean["dice"]
+            val_iou = val_mean["iou"]
+
+            append_validation_rows(
+                validation_path,
+                epoch,
+                val_rows,
+            )
+
+            writer.add_scalar(
+                "val/dice",
+                val_dice,
+                epoch,
+            )
+            writer.add_scalar(
+                "val/iou",
+                val_iou,
+                epoch,
+            )
+
+            logging.info(
+                "epoch=%d train_loss=%.6f val_dice=%.6f val_iou=%.6f",
+                epoch,
+                train_loss,
+                val_dice,
+                val_iou,
+            )
+
+            if val_dice > best_dice:
+                best_dice = val_dice
+                best_epoch = epoch
+
+                save_checkpoint(
+                    model,
+                    os.path.join(
+                        run_dir,
+                        "best.pth",
+                    ),
+                )
+
+                with open(
+                    os.path.join(
+                        run_dir,
+                        "best_validation.json",
+                    ),
+                    "w",
+                    encoding="utf-8",
+                ) as stream:
+                    json.dump(
+                        {
+                            "epoch": best_epoch,
+                            "val_dice": best_dice,
+                            "val_iou": val_iou,
+                        },
+                        stream,
+                        indent=2,
+                    )
+
+                logging.info(
+                    "saved best.pth epoch=%d val_dice=%.6f",
+                    best_epoch,
+                    best_dice,
+                )
+        else:
+            logging.info(
+                "epoch=%d train_loss=%.6f",
+                epoch,
+                train_loss,
+            )
+
+        append_history(
+            history_path,
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_dice": val_dice,
+                "val_iou": val_iou,
+                "learning_rate": learning_rate,
+                "elapsed_seconds": time.time() - started,
+            },
+        )
+
+        writer.add_scalar(
+            "train/epoch_loss",
+            train_loss,
+            epoch,
+        )
+
+        if args.save_every and (
+            epoch % args.save_every == 0
+            or epoch == args.max_epochs
+        ):
+            save_checkpoint(
+                model,
+                os.path.join(
+                    run_dir,
+                    "epoch_{}.pth".format(epoch),
+                ),
+            )
+
+        if scheduler is not None:
+            scheduler.step()
+
+    writer.close()
+
+    logging.info(
+        "training finished best_epoch=%d best_val_dice=%.6f elapsed=%.2fs",
+        best_epoch,
+        best_dice,
+        time.time() - started,
+    )
+
+    print("RUN_DIR=" + run_dir)
+    print(
+        "BEST_CHECKPOINT="
+        + os.path.join(run_dir, "best.pth")
+    )
+
+
+if __name__ == "__main__":
+    main()
