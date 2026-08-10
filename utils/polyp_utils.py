@@ -463,6 +463,25 @@ def evaluate_loader(
                     original_sizes[index, 1]
                 )
 
+                # probability = torch.sigmoid(
+                #     F.interpolate(
+                #         logits[index:index + 1],
+                #         size=(height, width),
+                #         mode="bilinear",
+                #         align_corners=False,
+                #     )
+                # )[0, 0].cpu().numpy()
+
+                # target = (
+                #     targets[index]
+                #     .squeeze(0)
+                #     .cpu()
+                #     .numpy()
+                #     >= 0.5
+                # )
+                # prediction = probability >= float(
+                #     threshold
+                # )
                 probability = torch.sigmoid(
                     F.interpolate(
                         logits[index:index + 1],
@@ -472,6 +491,16 @@ def evaluate_loader(
                     )
                 )[0, 0].cpu().numpy()
 
+                # Match the official EMCAD Polyp evaluation:
+                # per-image min-max normalization before thresholding.
+                probability = (
+                    probability - probability.min()
+                ) / (
+                    probability.max()
+                    - probability.min()
+                    + 1e-8
+                )
+
                 target = (
                     targets[index]
                     .squeeze(0)
@@ -479,9 +508,15 @@ def evaluate_loader(
                     .numpy()
                     >= 0.5
                 )
+
                 prediction = probability >= float(
                     threshold
                 )
+
+
+
+
+
 
                 metrics = binary_metrics(
                     prediction,

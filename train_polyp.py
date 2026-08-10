@@ -298,11 +298,17 @@ def resized_batch(images, masks, image_size, rate):
         round(image_size * rate / 32.0) * 32
     )
 
+    # images = F.interpolate(
+    #     images,
+    #     size=(scaled, scaled),
+    #     mode="bilinear",
+    #     align_corners=False,
+    # ) 为修复BKAI数据集指标差了8.4个点而修改
     images = F.interpolate(
         images,
         size=(scaled, scaled),
         mode="bilinear",
-        align_corners=False,
+        align_corners=True,
     )
 
     masks = F.interpolate(

@@ -153,28 +153,107 @@ class PolypDataset(data.Dataset):
             else cv2.IMREAD_GRAYSCALE
         )
 
-        image = cv2.imread(str(image_path), image_flag)
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        # image = cv2.imread(str(image_path), image_flag)
+        # mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+        # if image is None:
+        #     raise RuntimeError("Cannot read image: {}".format(image_path))
+        # if mask is None:
+        #     raise RuntimeError("Cannot read mask: {}".format(mask_path))
+
+        # if self.color_image:
+        #     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        # if image.shape[:2] != mask.shape[:2]:
+        #     raise RuntimeError(
+        #         "Image/mask size mismatch for {}: image={} mask={}".format(
+        #             key, image.shape[:2], mask.shape[:2]
+        #         )
+        #     )
+
+        # if int(mask.max()) > 10:
+        #     mask = (mask >= 128).astype(np.uint8)
+        # else:
+        #     mask = (mask > 0).astype(np.uint8)
+
+        image = cv2.imread(
+            str(image_path),
+            image_flag,
+        )
+        mask_raw = cv2.imread(
+            str(mask_path),
+            cv2.IMREAD_UNCHANGED,
+        )
 
         if image is None:
-            raise RuntimeError("Cannot read image: {}".format(image_path))
-        if mask is None:
-            raise RuntimeError("Cannot read mask: {}".format(mask_path))
+            raise RuntimeError(
+                "Cannot read image: {}".format(image_path)
+            )
+
+        if mask_raw is None:
+            raise RuntimeError(
+                "Cannot read mask: {}".format(mask_path)
+            )
 
         if self.color_image:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGR2RGB,
+            )
 
-        if image.shape[:2] != mask.shape[:2]:
+        if mask_raw.ndim == 2:
+            # ClinicDB, Kvasir, ColonDB, ETIS:
+            # preserve the original grayscale-mask behavior.
+            mask = mask_raw
+
+            if int(mask.max()) > 10:
+                mask = (
+                    mask >= 128
+                ).astype(np.uint8)
+            else:
+                mask = (
+                    mask > 0
+                ).astype(np.uint8)
+
+        elif (
+            mask_raw.ndim == 3
+            and mask_raw.shape[2] >= 3
+        ):
+            # BKAI uses red and green foreground labels.
+            # Merge all foreground colors into one binary mask.
+            mask_signal = np.max(
+                mask_raw[:, :, :3],
+                axis=2,
+            )
+
+            mask = (
+                mask_signal >= 128
+            ).astype(np.uint8)
+
+            if not np.any(mask):
+                raise RuntimeError(
+                    "Empty color mask after binarization: "
+                    "{}".format(mask_path)
+                )
+
+        else:
             raise RuntimeError(
-                "Image/mask size mismatch for {}: image={} mask={}".format(
-                    key, image.shape[:2], mask.shape[:2]
+                "Unsupported mask shape for {}: {}".format(
+                    mask_path,
+                    mask_raw.shape,
                 )
             )
 
-        if int(mask.max()) > 10:
-            mask = (mask >= 128).astype(np.uint8)
-        else:
-            mask = (mask > 0).astype(np.uint8)
+        if image.shape[:2] != mask.shape[:2]:
+            raise RuntimeError(
+                "Image/mask size mismatch for {}: "
+                "image={} mask={}".format(
+                    key,
+                    image.shape[:2],
+                    mask.shape[:2],
+                )
+            )
+
 
         if self.split == "train":
             transformed = self.transform(
