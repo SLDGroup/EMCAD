@@ -74,7 +74,7 @@ do
 done
 
 if [[ "${ENCODER}" == pvt_v2_* ]]; then
-  if [[ ! -f "${PRETRAINED_DIR}/${ENCODER}.pth" ]]; then
+  if [[ ! -f "$th = "D:\install\python_3.12.4\Scripts;$env:Path"{PRETRAINED_DIR}/${ENCODER}.pth" ]]; then
     echo "[ERROR] pretrained model not found:"
     echo "${PRETRAINED_DIR}/${ENCODER}.pth"
     exit 1
